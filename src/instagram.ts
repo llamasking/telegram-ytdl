@@ -2,12 +2,13 @@ import type { ExtendedContext } from "../types"
 import type Downloader from "./downloader"
 import type Notifier from "./notify"
 import type { Telegraf } from "telegraf"
-import type { GalleryDLOutput } from "/$/GalleryDL"
 
 import execa from "execa"
 import { filenameify, removeHashtags } from "./util"
 import strings from "./strings"
 import { INSTAGRAM_TV_REGEX, MAX_FILENAME_LENGTH } from "./constants"
+import { randomUUID } from "crypto"
+import got from "got"
 
 import { logger } from "./util"
 const log = logger("instagram")
@@ -19,22 +20,24 @@ if (isLoggedIn) log("instagram logged in")
 
 const login = ["-u", INSTAGRAM_USERNAME, "-p", INSTAGRAM_PASSWORD]
 
-const getFormats = (data: GalleryDLOutput[]) => {
+async function getFormats(data: string[]) {
+  // This is stupid.
+
   const videos: string[] = []
   const images: string[] = []
-  const mediaObjects = data.filter(item => item[0] === 3)
-  const [maybeMetadata] = data.filter(item => item[0] === 2)
-  const metadata = maybeMetadata[1]
-  if (!metadata || typeof metadata === "string") throw "could not parse metadata"
 
-  for (const [, , obj] of mediaObjects) {
-    if (obj?.video_url) videos.push(obj.video_url)
-    else if (obj?.display_url) images.push(obj.display_url)
+  for (const url of data) {
+    await got.head(url).then(resp => {
+      const contentType = resp.headers["content-type"]
+      if (contentType?.startsWith("image/")) images.push(url)
+      else if (contentType?.startsWith("video/")) videos.push(url)
+      else log("could not determine content type for url: " + url)
+    })
   }
 
   if (videos.length === 0 && images.length === 0) throw "no downloadable media found"
 
-  return { videos, images, metadata }
+  return { videos, images }
 }
 
 export default async (
@@ -69,16 +72,16 @@ export default async (
         supports_streaming: true,
       })
     } else {
-      let args = ["-g", url]
+      let args = ["-g", url, "-o", "api=graphql"]
 
       if (isLoggedIn) args = ["-j", ...login, url]
 
       const { stdout, stderr } = await execa(galleryDLPath, args)
       log(stdout, stderr)
 
-      const parsed = JSON.parse(stdout) as GalleryDLOutput[]
-      const formats = getFormats(parsed)
-      const description = removeHashtags(formats.metadata.description)
+      const list = stdout.split("\n")
+      const formats = await getFormats(list)
+      const description = randomUUID()
       const filename = filenameify(description).slice(0, MAX_FILENAME_LENGTH)
 
       for (const video of formats.videos) {
